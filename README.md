@@ -17,6 +17,8 @@
 - Handling compressed XML datasets for applications in web scraping, data aggregation, and news syndication.
 - Memory-efficient parsing of large or continuous XML data streams without requiring the entire document in memory.
 
+### DeepWiki Docs: [https://deepwiki.com/carlosplanchon/xmlstreamer](https://deepwiki.com/carlosplanchon/xmlstreamer)
+
 ## Installation
 
 To install `xmlstreamer`, use pip:
