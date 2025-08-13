@@ -8,7 +8,7 @@ packages = ["xmlstreamer"]
 
 [project]
 name = "xmlstreamer"
-version = "0.9"
+version = "1.0.0"
 authors = [
     {name = "Carlos A. Planchón", email = "carlosandresplanchonprestes@gmail.com"}
 ]

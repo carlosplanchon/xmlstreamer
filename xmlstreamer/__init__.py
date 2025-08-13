@@ -71,11 +71,15 @@ def download_file(
     parsed_url = urlparse(url)
     if parsed_url.scheme == "ftp":
         with closing(urllib.request.urlopen(url)) as r:
+            r.raise_for_status()
+            r.raw.decode_content = True
             shutil.copyfileobj(r, f)
 
     elif parsed_url.scheme in ["http", "https"]:
         headers = {"User-Agent": user_agent}
         with requests.get(url, stream=True, headers=headers) as r:
+            r.raise_for_status()
+            r.raw.decode_content = True
             shutil.copyfileobj(r.raw, f)
     else:
         raise Exception(f"Unknown scheme: {url}")
@@ -433,7 +437,9 @@ class StreamInterpreter:
 
         self.filter_parsed_item_func = None
 
+        self.stats_total_items: int = 0
         self.stats_parsed_items: int = 0
+        self.stats_filtered_items: int = 0
 
         self.start_date = datetime.now()
 
@@ -457,7 +463,7 @@ class StreamInterpreter:
         return self.get_item()
 
     def raise_stop_iteration(self):
-        print(f"XMLSTREAMER STATS ITEMS PARSED: {self.stats_parsed_items}")
+        print(f"XMLSTREAMER STATS ITEMS PARSED: {self.stats_filtered_items}")
         raise StopIteration
 
     def check_terminate(self) -> bool:
@@ -474,7 +480,12 @@ class StreamInterpreter:
         while self.tokenizer.PARSING_STATE != ParsingState.EOF:
             item: Optional[ParsedItem] = self.tokenizer.get_item()
 
+            if item is not None:
+                self.stats_total_items += 1
+
             if item is not None and item.parsed_content is not None:
+                self.stats_parsed_items += 1
+
                 # print("-> Item has contnet and will be evaluated.")
                 if self.ITEM_FILTER is not None and\
                         self.filter_parsed_item_func is not None:
@@ -490,7 +501,7 @@ class StreamInterpreter:
                 if filtered_item is not None:
                     # prettyprinter.cpprint(filtered_item.parsed_content)
 
-                    self.stats_parsed_items += 1
+                    self.stats_filtered_items += 1
                     return filtered_item.parsed_content
                 else:
                     ...
