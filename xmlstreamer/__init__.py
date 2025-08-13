@@ -71,8 +71,6 @@ def download_file(
     parsed_url = urlparse(url)
     if parsed_url.scheme == "ftp":
         with closing(urllib.request.urlopen(url)) as r:
-            r.raise_for_status()
-            r.raw.decode_content = True
             shutil.copyfileobj(r, f)
 
     elif parsed_url.scheme in ["http", "https"]:
