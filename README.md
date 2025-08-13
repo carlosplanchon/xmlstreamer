@@ -21,10 +21,10 @@
 
 ## Installation
 
-To install `xmlstreamer`, use pip:
+To install `xmlstreamer`, use uv:
 
 ```bash
-pip install xmlstreamer
+uv add xmlstreamer
 ```
 
 ## Usage
