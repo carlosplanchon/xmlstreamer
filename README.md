@@ -34,7 +34,7 @@ xmlstreamer is for large or unreliable inputs where conservative recovery, bound
 
 ## Features
 
-- **Streamed Data Parsing**: Parses XML data directly from HTTP, HTTPS, or FTP sources without loading the entire file into memory.
+- **Streamed Data Parsing**: Parses XML data directly from HTTP, HTTPS, or FTP sources - or from a local file or any binary stream (`source=`) - without loading the entire file into memory.
 - **GZIP Decompression Support**: Seamlessly handles GZIP-compressed XML feeds, including multi-member (concatenated) gzip.
 - **Encoding Detection**: Automatically detects character encodings on both plain and GZIP streams (UTF-16, Latin-1, etc.) and transcodes them to UTF-8 on the fly. Valid UTF-8 input is never altered. Detection reads the head of the feed, so bytes that contradict it much later cannot be transcoded: those are replaced with `U+FFFD`, warned once per run and counted in the closing stats.
 - **Customizable Item Tokenization**: Uses a byte-level tokenizer to isolate items and parses each item independently with Expat. Separator tags inside comments, CDATA, processing instructions or DOCTYPE declarations are ignored, so markup can never open or close an item - nor invent one. Attribute values may contain `>` (only `<` and `&` are illegal there) without confusing the scan, and buffer or chunk sizes never change what comes out. One contract: the separator tag must not nest inside itself (no `<item>` containing another `<item>`). One knob for the one case with no universal answer, a section that never closes: `Sections(on_limit=...)` chooses between reading it as content past `max_size` (the default: bounded damage) and discarding it whatever follows (never a record, at the price of the rest of the feed).
@@ -74,12 +74,21 @@ That is the whole program: gzip, character encodings and malformed items are han
 
 The interpreter is reusable configuration; iterating it opens a run (`FeedRun`) that owns one pass over the feed. Runs are independent, so nested loops and retries over the same interpreter are ordinary code, and the interpreter answers for the last one through `last_run` and the `stats_*` properties.
 
+Local data uses the same pipeline: pass `source=` instead of `url=` - a filesystem path or any binary file-like object (`io.BytesIO(...)` in a unit test, `sys.stdin.buffer` in a pipe). Gzip and encoding detection still apply, and no temporary file is involved. A path can be iterated again like a URL (each run reopens it); a file-like object is consumed by its first run, and a second run raises instead of yielding zero items.
+
 ## Command line
 
 The package doubles as a diagnostic tool: stream any feed to JSON Lines without writing code.
 
 ```bash
 uvx xmlstreamer https://example.com/large-feed.xml --tag item --limit 5
+```
+
+The positional argument is a URL, a local file path, or `-` for stdin, so the same tool replays a saved feed and composes in shell pipelines:
+
+```bash
+xmlstreamer saved-feed.xml --tag item
+curl -s https://example.com/large-feed.xml | xmlstreamer - --tag item
 ```
 
 One JSON object per line on stdout, ready to pipe into `jq`, a file, or whatever sits downstream. In [Nushell](https://www.nushell.sh/) that stream becomes a native table in one pipeline - type the fields, filter, group and export from there (values arrive as strings, so promote what you need):
@@ -92,7 +101,7 @@ xmlstreamer https://example.com/large-feed.xml --tag item
 | to csv
 ```
 
-The useful flags mirror the API: `--mode stream` (no temp file), `--nested` (nested dicts), `--limit N` (sample cheaply and release the source), `--max-seconds S` (time budget) and `-v` (progress and stats on stderr). Errors exit non-zero with a one-line message, and a mid-feed cut in stream mode reports how many items were delivered before dying.
+The useful flags mirror the API: `--mode stream` (no temp file), `--nested` (nested dicts), `--raw` (each item's bytes instead of JSON; add `--print0` for NUL-delimited framing), `--limit N` (sample cheaply and release the source), `--max-seconds S` (time budget) and `-v` (progress and stats on stderr). Errors exit non-zero with a one-line message, and a mid-feed cut in stream mode reports how many items were delivered before dying.
 
 ## Cookbook
 
@@ -197,7 +206,7 @@ Every failure of a feed or of the network xmlstreamer raises on its own descends
 - `FeedInterruptedError`: stream mode only, the connection died mid-feed. Carries `items_delivered` and the original network error as `__cause__`.
 - `UnsupportedSchemeError` (also a `ValueError`): the URL scheme is not http, https or ftp. The message names the scheme, never the URL, which can carry credentials.
 
-Network errors are not wrapped while the connection is being established: a 404 is `requests.exceptions.HTTPError` and a stalled server is `requests.exceptions.Timeout`, in both download modes. In stream mode, network errors after that point surface as `FeedInterruptedError` instead. Malformed items are never raised: they are logged at `WARNING` and skipped.
+Network errors are not wrapped while the connection is being established: a 404 is `requests.exceptions.HTTPError` and a stalled server is `requests.exceptions.Timeout`, in both download modes. A `source=` path that does not open raises its raw `OSError` (`FileNotFoundError` and friends) at the same point. In stream mode, network errors after that point surface as `FeedInterruptedError` instead. Malformed items are never raised: they are logged at `WARNING` and skipped.
 
 Programming mistakes stay plain Python and are deliberately outside that family, because they are not something a caller handles at runtime: bad arguments are `TypeError` / `ValueError` at the constructor, and opening a run while `close()` is releasing everything is a `RuntimeError`.
 
@@ -227,6 +236,24 @@ for item in interpreter:
     for author in item["authors"]["author"]:
         print(author["name"])
 ```
+
+## Raw output (opt-in)
+
+`output=Raw()` delivers each item as bytes instead of a dict: the slice between the item's separator tags, exactly as the parser would receive it - after transparent gunzip, after stream-level normalization to UTF-8, before any per-item repair, and never re-serialized. Selection does not change - an item that does not parse is still dropped with a warning, and `item_filter` still sees the flat dict - only the representation does. The separator tags themselves (and any attributes on them) are not part of the slice.
+
+```python
+from xmlstreamer import Raw, StreamInterpreter
+
+interpreter = StreamInterpreter(
+    source="saved-feed.xml", separator_tag="book", output=Raw()
+)
+for item_bytes in interpreter:
+    ...  # b"<title>The Cartographer</title><year>2011</year>"
+```
+
+Two uses stand out: splitting a huge feed into per-item work units without re-serializing them, and forensics - item-level `U+FFFD` replacement can only happen when the stream needed no transcoding, so in exactly that case the parsed dict carries the replacement while the raw bytes keep the stream's original bytes. On the command line this is `--raw`; items are newline-delimited by default (readable, but an item may itself span lines), and `--print0` switches to NUL - which cannot appear in XML, so that framing is unambiguous.
+
+Type checkers follow the mode: with `output=Raw()` the interpreter is a `StreamInterpreter[bytes]`, with `Nested()` or the default it is a `StreamInterpreter[dict[str, Any]]` - so existing typed code keeps checking clean after upgrading.
 
 ## Markup that never closes
 

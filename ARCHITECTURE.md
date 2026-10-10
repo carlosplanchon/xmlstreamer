@@ -57,6 +57,7 @@ isolates damage instead of halting.
 
 ```
 URL -> download (Transport: temp file | straight stream)
+   (or: source= - a local path or binary file-like object, no download)
     -> gzip detection by magic bytes (multi-member supported)
     -> encoding resolution (valid utf-8 passes through untouched;
        chardet runs only for non-utf-8 or NUL-dense samples)
@@ -65,8 +66,9 @@ URL -> download (Transport: temp file | straight stream)
     -> optional Nested() reshaping (after filters)
 ```
 
-`StreamInterpreter` is the configuration: url, separator, filter,
-output, transport and section policy, reusable across runs. Iterating
+`StreamInterpreter` is the configuration: url or source, separator,
+filter, output, transport and section policy, reusable across runs.
+Iterating
 it opens a `FeedRun`, which owns one pass: its source, its tokenizer,
 its stats. The interpreter answers for the last one (`last_run`, and
 the `stats_*` properties) so reading stats after a loop stays simple.
@@ -160,7 +162,8 @@ pinned by tests (`tests/`), including generative ones (Hypothesis).
   ended by itself may still be replaced from the hook: only the global
   teardown refuses.
 - **The error boundary is sharp.** Failures before the first item
-  (connect, HTTP status, the initial encoding read) raise their raw
+  (connect, HTTP status, opening a source, the initial encoding read)
+  raise their raw
   exception in both download modes; once items are flowing in stream
   mode, network errors surface as `FeedInterruptedError` carrying
   `items_delivered`. Library-owned errors descend from
@@ -168,9 +171,10 @@ pinned by tests (`tests/`), including generative ones (Hypothesis).
 - **Bad arguments fail at construction.** Every `StreamInterpreter`
   argument is validated in `__init__` (`TypeError`/`ValueError` at the
   call site); the `Tokenizer` re-checks its own. A mistake can never
-  surface mid-iteration or as a silent zero-item run. The one deliberate
-  exception is the URL scheme, which stays an iteration-time error to
-  keep the error boundary above intact.
+  surface mid-iteration or as a silent zero-item run. The deliberate
+  exceptions are reachability - the URL scheme, and whether a source
+  path opens - which stay iteration-time errors to keep the error
+  boundary above intact.
 - **Resources release deterministically.** `close()` (or the context
   manager) releases the socket or temp file immediately; exhausting the
   iterator does the same via the generator's `finally` (primed so it
@@ -218,17 +222,19 @@ pinned by tests (`tests/`), including generative ones (Hypothesis).
 `xmlstreamer/__init__.py`, in reading order:
 
 1. Errors (`XMLStreamerError` family) and auth/`Transport` dataclasses.
-2. Download plumbing: `download_file` / `_stream_feed_generator`, gzip
+2. Acquisition plumbing: `download_file` / `_stream_feed_generator` /
+   `get_source_feed_generator`, the two shared pipelines
+   (`_feed_generator_from_file`, `_feed_generator_from_chunks`), gzip
    (`stream_gzip_decompress`), encoding (`resolve_sample_encoding`,
    `resolve_stream_encoding`, `decode_stream`), and `_owned_generator`
    (deterministic cleanup).
 3. Per-item parsing: `ItemHandler` (flattening rules) and `parse_item`.
-4. `Nested` / `to_nested` (opt-in reshaping).
+4. `Nested` / `to_nested` / `Raw` (opt-in output shapes).
 5. `Tokenizer` (the byte layer: buffer, cursors, section scanning).
 6. `StreamInterpreter` (the public iterator).
 
 `xmlstreamer/__main__.py` is the CLI: a thin argparse wrapper that
-streams items as JSON Lines. It uses only the public API.
+streams items as JSON Lines or raw bytes. It uses only the public API.
 
 ## Safety nets
 

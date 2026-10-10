@@ -12,6 +12,7 @@ DOCUMENTED_API = {
     "FeedInterruptedError",
     "FeedRun",
     "Nested",
+    "Raw",
     "Sections",
     "StreamInterpreter",
     "Transport",

@@ -34,6 +34,7 @@ EXPECTED_RECIPES = {
     "production-logging",
     "time-boxed-runs",
     "parallel-feeds",
+    "replay-captured-feed",
 }
 
 
@@ -217,3 +218,15 @@ def test_time_boxed_runs(http_server):
     namespace = run_recipe("time-boxed-runs", url)
     assert len(namespace["books"]) == 3
     assert namespace["interpreter"].stats_delivered_items == 3
+
+
+def test_replay_captured_feed(tmp_path):
+    # The one recipe with no server at all: the feed is a file on disk.
+    saved = tmp_path / "captured.xml"
+    saved.write_bytes(THREE_BOOKS)
+    namespace = run_recipe(
+        "replay-captured-feed", "http://unused.invalid/", path=str(saved)
+    )
+    assert [book["title"] for book in namespace["books"]] == [
+        "A History of Bridges", "Field Guide to Rivers", "The Cartographer",
+    ]

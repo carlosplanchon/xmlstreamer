@@ -315,10 +315,30 @@ Keep `max_workers` modest: the win comes from overlapping network
 waits, not from parallel parsing - Python still parses one item at a
 time across threads, so a pool buys nothing for local files.
 
+## 12. Replay a captured feed from disk
+
+A feed that broke something is worth keeping. Save the bytes once, then
+reproduce the run locally as many times as the diagnosis needs - same
+pipeline, gzip and encoding detection included, no network. The snippet
+assumes `path` points at the saved file:
+
+<!-- recipe: replay-captured-feed -->
+```python
+from xmlstreamer import StreamInterpreter
+
+with StreamInterpreter(source=path, separator_tag="book") as interpreter:
+    books = list(interpreter)
+```
+
+`source=` also takes any binary file-like object, so
+`io.BytesIO(captured_bytes)` drives a unit test and `sys.stdin.buffer`
+sits in a pipeline. A path can be iterated again (each run reopens it);
+a file-like object is consumed by its first run.
+
 ## Things you do not need a recipe for
 
-A fair question after ten recipes is what still needs configuring by
-hand. These never do - the defaults already handle them:
+A fair question after a dozen recipes is what still needs configuring
+by hand. These never do - the defaults already handle them:
 
 - **Character encodings**: detected on the stream and transcoded to UTF-8,
   even when the XML declaration lies. Valid UTF-8 is never altered.

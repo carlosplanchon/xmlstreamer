@@ -1,6 +1,8 @@
 import collections.abc
 import dataclasses
+import io
 import logging
+import os
 import shutil
 import tempfile
 import time
@@ -35,12 +37,17 @@ from typing import Any
 from typing import List
 from typing import Tuple
 from typing import Union
+from typing import IO
+from typing import Generic
+from typing import TypeVar
+from typing import cast
+from typing import overload
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 # Single source of truth: pyproject reads this attribute at build time.
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 __all__ = [
     "ApiKeyAuth",
@@ -51,6 +58,7 @@ __all__ = [
     "Nested",
     "FeedRun",
     "ParsedItem",
+    "Raw",
     "Sections",
     "StreamInterpreter",
     "Transport",
@@ -66,6 +74,13 @@ FeedGeneratorT = Generator[bytes, None, None]
 
 # An item filter takes the flat {path: text} item and keeps it on truthy.
 ItemFilterT = Optional[Callable[[Dict[str, Any]], Any]]
+
+# A local source: a filesystem path, or a binary file-like object.
+SourceT = Union[str, os.PathLike, IO[bytes]]
+
+# What a run yields, pinned at construction by output=: dicts by
+# default and under Nested(), bytes under Raw().
+ItemT = TypeVar("ItemT")
 
 
 USER_AGENT: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWeb"\
@@ -466,7 +481,7 @@ def _download_into(
 
 
 def is_gzip(
-    temp_file: BufferedRandom
+    temp_file: IO[bytes]
         ) -> bool:
     temp_file.seek(0)
     is_gzip_result: bool = temp_file.read(2) == GZIP_MAGIC_NUMBER
@@ -554,7 +569,7 @@ def resolve_sample_encoding(sample: bytes) -> Optional[str]:
 
 
 def buffered_random_to_generator(
-    buffered_random: BufferedRandom,
+    buffered_random: IO[bytes],
     chunk_size: int = STREAM_CHUNK_SIZE
         ) -> Generator[bytes, None, None]:
     while True:
@@ -616,42 +631,16 @@ def _past_deadline(deadline: Optional[float], stage: str) -> bool:
     return False
 
 
-def _stream_feed_generator(
-    url: str,
-    transport: Transport,
+def _feed_generator_from_chunks(
+    raw_chunks: Iterable[bytes],
+    closer: Callable[[], Any],
     deadline: Optional[float] = None,
         ) -> FeedGeneratorT:
     """
-    Feed generator without a temp file: gzip and encoding detection peek
-    the stream head and re-emit it, since there is nothing to seek back.
+    Feed generator over a one-way chunk iterator: gzip and encoding
+    detection peek the head and re-emit it, since there is nothing to
+    seek back. Worst case one encoding sample is held in memory.
     """
-    parsed_url = urlparse(url)
-    if parsed_url.scheme == "ftp":
-        response = _ftp_open(url, transport)
-        raw_chunks = iter(lambda: response.read(STREAM_CHUNK_SIZE), b"")
-        closer = response.close
-    elif parsed_url.scheme in ["http", "https"]:
-        response = requests.get(
-            url,
-            stream=True,
-            headers=_build_http_headers(transport.user_agent, transport.auth),
-            auth=_build_http_auth(transport.auth),
-            proxies=transport.proxy,
-            timeout=transport.timeout,
-        )
-        closer = response.close
-        try:
-            response.raise_for_status()
-        except BaseException:
-            closer()
-            raise
-        raw_chunks = response.iter_content(chunk_size=STREAM_CHUNK_SIZE)
-    else:
-        raise UnsupportedSchemeError(
-            f"unsupported URL scheme {parsed_url.scheme!r}: "
-            "expected http, https or ftp"
-        )
-
     try:
         head = b""
         for chunk in raw_chunks:
@@ -704,32 +693,67 @@ def _stream_feed_generator(
     return _owned_generator(feed_generator, closer)
 
 
-def get_feed_generator(
+def _stream_feed_generator(
     url: str,
     transport: Transport,
     deadline: Optional[float] = None,
         ) -> FeedGeneratorT:
-    if transport.download_mode == "stream":
-        return _stream_feed_generator(
-            url=url, transport=transport, deadline=deadline
+    """
+    Feed generator without a temp file: gzip and encoding detection peek
+    the stream head and re-emit it, since there is nothing to seek back.
+    """
+    parsed_url = urlparse(url)
+    if parsed_url.scheme == "ftp":
+        response = _ftp_open(url, transport)
+        raw_chunks = iter(lambda: response.read(STREAM_CHUNK_SIZE), b"")
+        closer = response.close
+    elif parsed_url.scheme in ["http", "https"]:
+        response = requests.get(
+            url,
+            stream=True,
+            headers=_build_http_headers(transport.user_agent, transport.auth),
+            auth=_build_http_auth(transport.auth),
+            proxies=transport.proxy,
+            timeout=transport.timeout,
+        )
+        closer = response.close
+        try:
+            response.raise_for_status()
+        except BaseException:
+            closer()
+            raise
+        raw_chunks = response.iter_content(chunk_size=STREAM_CHUNK_SIZE)
+    else:
+        raise UnsupportedSchemeError(
+            f"unsupported URL scheme {parsed_url.scheme!r}: "
+            "expected http, https or ftp"
         )
 
-    temp_file: BufferedRandom = download_file(
-        url=url, transport=transport, deadline=deadline
+    return _feed_generator_from_chunks(
+        raw_chunks=raw_chunks, closer=closer, deadline=deadline
     )
-    temp_file.seek(0)
 
-    is_gzip_result: bool = is_gzip(temp_file=temp_file)
+
+def _feed_generator_from_file(
+    f: IO[bytes],
+    closer: Callable[[], Any],
+        ) -> FeedGeneratorT:
+    """
+    Feed generator over a seekable binary file: the gzip check and the
+    encoding sample rewind with seek, nothing is held in memory.
+    """
+    f.seek(0)
+    is_gzip_result: bool = is_gzip(temp_file=f)
     logger.debug("Is gzip: %s", is_gzip_result)
 
     def build_feed_generator() -> FeedGeneratorT:
-        temp_file.seek(0)
+        f.seek(0)
         if is_gzip_result is True:
             # Fixed-size chunks; iterating a binary file splits on \n bytes.
             return stream_gzip_decompress(
-                stream=buffered_random_to_generator(buffered_random=temp_file)
+                stream=buffered_random_to_generator(buffered_random=f)
             )
-        return buffered_random_to_generator(buffered_random=temp_file)
+        return buffered_random_to_generator(buffered_random=f)
 
     # Encoding detection runs on BOTH paths (gzip and plain): a plain
     # UTF-16 feed is otherwise invisible to the ASCII tag regexes.
@@ -749,7 +773,53 @@ def get_feed_generator(
             stream_encoding
         )
 
-    return _owned_generator(feed_generator, temp_file.close)
+    return _owned_generator(feed_generator, closer)
+
+
+def get_feed_generator(
+    url: str,
+    transport: Transport,
+    deadline: Optional[float] = None,
+        ) -> FeedGeneratorT:
+    if transport.download_mode == "stream":
+        return _stream_feed_generator(
+            url=url, transport=transport, deadline=deadline
+        )
+
+    temp_file: BufferedRandom = download_file(
+        url=url, transport=transport, deadline=deadline
+    )
+    return _feed_generator_from_file(temp_file, temp_file.close)
+
+
+def get_source_feed_generator(
+    source: SourceT,
+    deadline: Optional[float] = None,
+        ) -> FeedGeneratorT:
+    """
+    Feed generator for a local source. A path is opened, read through
+    the seek-based pipeline and closed by the run. A file-like object
+    is read once through the peeked pipeline and never closed here:
+    the run closes what it opens, a caller's object stays the caller's.
+    """
+    if isinstance(source, (str, os.PathLike)):
+        f = open(source, "rb")
+        try:
+            return _feed_generator_from_file(f, f.close)
+        except BaseException:
+            f.close()
+            raise
+
+    # read1 (when the object offers it) returns what already arrived
+    # instead of blocking until a full chunk: what a pipe needs.
+    read = getattr(source, "read1", source.read)
+    raw_chunks = iter(lambda: read(STREAM_CHUNK_SIZE), b"")
+    return _feed_generator_from_chunks(
+        raw_chunks=raw_chunks,
+        # Not the object's close: it was not opened here.
+        closer=lambda: None,
+        deadline=deadline,
+    )
 
 
 class ItemHandler:
@@ -902,6 +972,18 @@ class Nested:
         if not all(isinstance(path, str) for path in paths):
             raise TypeError("force_list paths must be strings.")
         self.force_list = paths
+
+
+@dataclasses.dataclass(slots=True)
+class Raw:
+    """
+    Output mode for StreamInterpreter: deliver each item as bytes
+    instead of a parsed dict - the slice between its separator tags,
+    exactly as the parser would receive it: after transparent gunzip
+    and stream-to-utf-8 normalization, before any per-item repair,
+    never re-serialized. The selection is unchanged: an item that
+    does not parse is dropped.
+    """
 
 
 def to_nested(
@@ -1748,7 +1830,7 @@ class Tokenizer:
         return self.actual_item
 
 
-class FeedRun:
+class FeedRun(Generic[ItemT]):
     """
     One pass over one feed: its own source, tokenizer, counters and
     time budget. Iterating a StreamInterpreter opens one; runs of the
@@ -1758,7 +1840,7 @@ class FeedRun:
 
     def __init__(
         self,
-        interpreter: "StreamInterpreter",
+        interpreter: "StreamInterpreter[ItemT]",
         tokenizer: Tokenizer,
         budget_start: float,
         budget: Optional[float],
@@ -1784,7 +1866,7 @@ class FeedRun:
         # Items whose invalid utf-8 had to be replaced (encoding missed).
         self._replaced_items: int = 0
 
-    def __iter__(self) -> "FeedRun":
+    def __iter__(self) -> "FeedRun[ItemT]":
         return self
 
     def check_terminate(self) -> bool:
@@ -1800,7 +1882,7 @@ class FeedRun:
             return True
         return False
 
-    def __next__(self) -> Dict[str, Any]:
+    def __next__(self) -> ItemT:
         if self._finished:
             raise StopIteration
         if self.check_terminate() is True:
@@ -1854,7 +1936,7 @@ class FeedRun:
                     exc_info=True,
                 )
 
-    def __enter__(self) -> "FeedRun":
+    def __enter__(self) -> "FeedRun[ItemT]":
         return self
 
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
@@ -1865,7 +1947,7 @@ class FeedRun:
         self.close()
         raise StopIteration
 
-    def get_item(self) -> Dict[str, Any]:
+    def get_item(self) -> ItemT:
         interpreter = self.interpreter
         # The end is re-read after anything that reaches caller code
         # (the scan and its logging, the filter): once a run is over,
@@ -1905,33 +1987,86 @@ class FeedRun:
                     if self._finished:
                         break  # the filter closed the run: nothing more
                     self.stats_delivered_items += 1
-                    # Conversion runs AFTER the filter (filters see flat).
+                    # Representation runs AFTER the filter (filters see
+                    # the flat dict in every output mode). The casts
+                    # state what the __init__ overloads pinned: Raw
+                    # yields bytes, everything else dicts.
+                    if isinstance(interpreter.OUTPUT, Raw):
+                        return cast(ItemT, item.content)
                     if interpreter.OUTPUT is not None:
-                        return to_nested(
+                        return cast(ItemT, to_nested(
                             item.parsed_content,
                             interpreter.OUTPUT.force_list
-                        )
-                    return item.parsed_content
+                        ))
+                    return cast(ItemT, item.parsed_content)
 
         self.finish()
 
 
-class StreamInterpreter:
+class StreamInterpreter(Generic[ItemT]):
+    # The overloads pin ItemT to what a run will yield, decided by
+    # output=. Signatures must mirror the implementation below.
+    @overload
     def __init__(
-        self,
-        url: str,
-        separator_tag: str,
+        self: "StreamInterpreter[Dict[str, Any]]",
+        url: Optional[str] = None,
+        separator_tag: Optional[str] = None,
         item_filter: ItemFilterT = None,
-        buffer_size: int = 1024 * 128,  # 128Kb
+        buffer_size: int = 1024 * 128,
         max_running_time: Optional[float] = None,
         output: Optional[Nested] = None,
         transport: Optional[Transport] = None,
         sections: Optional[Sections] = None,
+        source: Optional[SourceT] = None,
+            ) -> None: ...
+
+    @overload
+    def __init__(
+        self: "StreamInterpreter[bytes]",
+        url: Optional[str] = None,
+        separator_tag: Optional[str] = None,
+        item_filter: ItemFilterT = None,
+        buffer_size: int = 1024 * 128,
+        max_running_time: Optional[float] = None,
+        output: Raw = ...,
+        transport: Optional[Transport] = None,
+        sections: Optional[Sections] = None,
+        source: Optional[SourceT] = None,
+            ) -> None: ...
+
+    def __init__(
+        self,
+        url: Optional[str] = None,
+        separator_tag: Optional[str] = None,
+        item_filter: ItemFilterT = None,
+        buffer_size: int = 1024 * 128,  # 128Kb
+        max_running_time: Optional[float] = None,
+        output: Optional[Union[Nested, Raw]] = None,
+        transport: Optional[Transport] = None,
+        sections: Optional[Sections] = None,
+        source: Optional[SourceT] = None,
             ) -> None:
         # Every argument is checked here, at the call site, so a bad
         # value can never fail mid-iteration or yield zero items.
-        if not isinstance(url, str):
+        if (url is None) == (source is None):
+            raise ValueError(
+                "pass exactly one of url or source: url reaches the "
+                "network, source is a local path or a binary file-like "
+                "object."
+            )
+        if url is not None and not isinstance(url, str):
             raise TypeError("url must be a str")
+        if source is not None and not isinstance(source, (str, os.PathLike)):
+            if isinstance(source, io.TextIOBase):
+                raise TypeError(
+                    "source must be binary: open the file with 'rb' "
+                    "(text mode yields str, the tokenizer reads bytes)."
+                )
+            if not callable(getattr(source, "read", None)):
+                raise TypeError(
+                    "source must be a filesystem path or a binary "
+                    "file-like object with a read() method."
+                )
         if not isinstance(separator_tag, str):
             raise TypeError("separator_tag must be a str")
         if not separator_tag.strip():
@@ -1965,15 +2100,21 @@ class StreamInterpreter:
                     "max_running_time must be a positive number of "
                     "seconds, or None for no time budget."
                 )
-        if output is not None and not isinstance(output, Nested):
+        if output is not None and not isinstance(output, (Nested, Raw)):
             raise TypeError(
-                "output must be a Nested(...) instance, or None for the "
-                "default flat items."
+                "output must be a Nested(...) or Raw() instance, or "
+                "None for the default flat items."
             )
         if transport is not None and not isinstance(transport, Transport):
             raise TypeError(
                 "transport must be a Transport(...) instance, or None "
                 "for the defaults."
+            )
+        if transport is not None and source is not None:
+            raise ValueError(
+                "transport configures how a url is reached (agent, "
+                "auth, proxy, timeout, download mode): it does not "
+                "apply to a local source."
             )
         if sections is not None and not isinstance(sections, Sections):
             raise TypeError(
@@ -1987,7 +2128,8 @@ class StreamInterpreter:
             )
 
         self.BUFFER_SIZE = buffer_size
-        self.URL: str = url
+        self.URL: Optional[str] = url
+        self.SOURCE: Optional[SourceT] = source
         self.separator_tag = separator_tag
         self.MAX_RUNNING_TIME = max_running_time
         self.OUTPUT = output
@@ -2003,13 +2145,16 @@ class StreamInterpreter:
 
         # Runs still holding a source, so close() can release them all,
         # and the guard that keeps that set from growing while it does.
-        self._open_runs: "weakref.WeakSet[FeedRun]" = weakref.WeakSet()
+        self._open_runs: "weakref.WeakSet[FeedRun[ItemT]]" = weakref.WeakSet()
         self._closing: bool = False
+        # A caller's file-like object is consumed by its first run;
+        # a url or a path is reopened instead.
+        self._source_consumed: bool = False
         # The last run opened by iterating this interpreter, if any.
         # Counters live on the run; the properties below answer for it.
-        self.last_run: Optional["FeedRun"] = None
+        self.last_run: Optional["FeedRun[ItemT]"] = None
 
-    def __iter__(self) -> "FeedRun":
+    def __iter__(self) -> "FeedRun[ItemT]":
         """Open a run: its own source, tokenizer and counters."""
         if self._closing:
             # Reachable from an end-of-run hook: a teardown hands out no
@@ -2025,12 +2170,30 @@ class StreamInterpreter:
         )
         # Acquisition happens here, so a feed that cannot be reached
         # fails where callers already expect it to.
-        tokenizer = Tokenizer(
-            feed_generator=get_feed_generator(
-                url=self.URL,
+        if self.SOURCE is None:
+            # __init__ enforced exactly one of url/source: no source
+            # here means url is a str.
+            feed_generator = get_feed_generator(
+                url=cast(str, self.URL),
                 transport=self.TRANSPORT,
                 deadline=deadline,
-            ),
+            )
+        else:
+            if not isinstance(self.SOURCE, (str, os.PathLike)):
+                if self._source_consumed:
+                    raise RuntimeError(
+                        "a file-like source cannot be re-read: pass a "
+                        "path or a fresh object."
+                    )
+                # Marked before reading: a failed acquisition may have
+                # drained part of the object already.
+                self._source_consumed = True
+            feed_generator = get_source_feed_generator(
+                source=self.SOURCE,
+                deadline=deadline,
+            )
+        tokenizer = Tokenizer(
+            feed_generator=feed_generator,
             separator_tag=self.separator_tag,
             buffer_size=self.BUFFER_SIZE,
             sections=self.SECTIONS,
@@ -2056,7 +2219,7 @@ class StreamInterpreter:
         """Of those, the ones the filter kept and the caller received."""
         return self.last_run.stats_delivered_items if self.last_run else 0
 
-    def forget_run(self, run: "FeedRun") -> None:
+    def forget_run(self, run: "FeedRun[ItemT]") -> None:
         """A run that released its source is no longer this one's to close."""
         self._open_runs.discard(run)
 
@@ -2108,13 +2271,13 @@ class StreamInterpreter:
         if failures:
             raise failures[0]
 
-    def __enter__(self) -> "StreamInterpreter":
+    def __enter__(self) -> "StreamInterpreter[ItemT]":
         return self
 
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
         self.close()
 
-    def run_finished(self, run: "FeedRun") -> None:
+    def run_finished(self, run: "FeedRun[ItemT]") -> None:
         """
         End-of-run hook: called with the run that ended, once, after it
         released its source and logged its stats. Override it to alert;

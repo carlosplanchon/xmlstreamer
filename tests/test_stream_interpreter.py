@@ -256,7 +256,9 @@ def test_item_filter_rejects_non_callable():
 
 
 def test_url_rejects_non_string():
-    with pytest.raises(TypeError, match="url"):
+    # None is no longer a bad type: it means "use source instead", and
+    # with neither given the constructor asks for exactly one.
+    with pytest.raises(ValueError, match="url or source"):
         StreamInterpreter(url=None, separator_tag="item")
     with pytest.raises(TypeError, match="url"):
         StreamInterpreter(

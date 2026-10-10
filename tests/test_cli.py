@@ -1,5 +1,6 @@
 """The command line is the packaged recipe 8: feed in, JSONL out."""
 
+import io
 import json
 
 import pytest
@@ -137,3 +138,82 @@ def test_version_flag(capsys):
         main(["--version"])
     assert excinfo.value.code == 0
     assert xmlstreamer.__version__ in capsys.readouterr().out
+
+
+class _FakeStdin:
+    """Only what the CLI touches: the binary buffer underneath."""
+
+    def __init__(self, data: bytes) -> None:
+        self.buffer = io.BytesIO(data)
+
+
+def test_dash_reads_stdin(monkeypatch, capsys):
+    monkeypatch.setattr(
+        "sys.stdin", _FakeStdin(build_feed([{"t": "one"}, {"t": "two"}]))
+    )
+    assert main(["-"]) == 0
+    items, err = out_lines(capsys)
+    assert items == [{"t": "one"}, {"t": "two"}]
+    assert err == ""
+
+
+def test_path_positional_streams_file(tmp_path, capsys):
+    path = tmp_path / "feed.xml"
+    path.write_bytes(build_feed([{"t": "one"}, {"t": "two"}]))
+    assert main([str(path)]) == 0
+    items, err = out_lines(capsys)
+    assert items == [{"t": "one"}, {"t": "two"}]
+    assert err == ""
+
+
+def test_url_argument_still_hits_the_network(http_server, capsys):
+    # The sniffer routes anything with :// to the network, never to the
+    # filesystem: a URL must not be tried as a path first.
+    url = http_server.serve("/sniff.xml", build_feed([{"t": "one"}]))
+    assert main([url]) == 0
+    capsys.readouterr()
+    assert len(http_server.requests) == 1
+
+
+def test_mode_with_local_source_errors(tmp_path, capsys):
+    # --mode picks a download strategy: with no download it is a typo,
+    # not a no-op.
+    path = tmp_path / "feed.xml"
+    path.write_bytes(build_feed([{"t": "one"}]))
+    with pytest.raises(SystemExit) as excinfo:
+        main(["--mode", "stream", str(path)])
+    assert excinfo.value.code == 2
+    assert "--mode" in capsys.readouterr().err
+
+
+def test_raw_flag_emits_bytes(tmp_path, capsysbinary):
+    path = tmp_path / "feed.xml"
+    path.write_bytes(build_feed([{"t": "one"}, {"t": "two"}]))
+    assert main([str(path), "--raw"]) == 0
+    captured = capsysbinary.readouterr()
+    assert captured.out == b"<t>one</t>\n<t>two</t>\n"
+
+
+def test_raw_and_nested_conflict(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        main(["feed.xml", "--raw", "--nested"])
+    assert excinfo.value.code == 2
+    assert "--raw" in capsys.readouterr().err
+
+
+def test_print0_emits_nul_delimited_items(tmp_path, capsysbinary):
+    # NUL cannot appear in XML, so this framing is unambiguous even
+    # when an item spans several lines.
+    path = tmp_path / "feed.xml"
+    path.write_bytes(build_feed([{"t": "one"}, {"t": "two"}]))
+    assert main([str(path), "--raw", "--print0"]) == 0
+    assert capsysbinary.readouterr().out == b"<t>one</t>\x00<t>two</t>\x00"
+
+
+def test_print0_requires_raw(capsys):
+    # JSON output is already line-safe: the flag only means something
+    # for raw bytes.
+    with pytest.raises(SystemExit) as excinfo:
+        main(["feed.xml", "--print0"])
+    assert excinfo.value.code == 2
+    assert "--print0" in capsys.readouterr().err
