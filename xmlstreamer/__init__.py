@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
 
 # Single source of truth: pyproject reads this attribute at build time.
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 __all__ = [
     "ApiKeyAuth",
