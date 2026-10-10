@@ -225,6 +225,35 @@ def test_comment_opener_split_across_chunks():
     assert titles(drain(tokenizer)) == ["real"]
 
 
+def test_stray_lt_and_quote_in_text_never_swallow_next_item():
+    # "<b'c" in text is no tag: its quote must not hide what follows,
+    # wherever a refill splits it.
+    data = b"<feed><item><t>a<b'c</t></item><item><t>d</t></item></feed>"
+    for buffer_size in (1, 16, 4096):
+        for chunk_size in (1, 2, 3, 5, 7, 64):
+            items = drain(make_tokenizer(
+                data, buffer_size=buffer_size, chunk_size=chunk_size
+            ))
+            assert [item.parsed_content for item in items] == [
+                None, {"t": "d"},
+            ], (buffer_size, chunk_size)
+
+
+def test_comment_with_quote_split_at_boundary_keeps_next_item():
+    # A "<" left at a boundary that grows into "<!--" opens a comment;
+    # an apostrophe inside it quotes nothing.
+    data = (
+        b"<feed><item><t>x</t></item><!-- don't <item><t>fake</t></item> -->"
+        b"<item><t>real</t></item></feed>"
+    )
+    for buffer_size in (1, 16, 4096):
+        for chunk_size in (1, 2, 3, 5, 7, 64):
+            items = drain(make_tokenizer(
+                data, buffer_size=buffer_size, chunk_size=chunk_size
+            ))
+            assert titles(items) == ["x", "real"], (buffer_size, chunk_size)
+
+
 def test_unterminated_comment_reaches_eof_cleanly():
     data = b"<feed><item><t>a</t></item><!-- sin cierre <item><t>x</t></item>"
     items = drain(make_tokenizer(data, buffer_size=64, chunk_size=16))

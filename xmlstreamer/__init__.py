@@ -1100,6 +1100,8 @@ SECTION_OPENER_PATTERN: re.Pattern = re.compile(rb"<[!?]")
 # Inside a tag, only these bytes matter: quotes open and close runs
 # where ">" is ordinary text.
 TAG_STOP_PATTERN: re.Pattern = re.compile(rb"[>\"']")
+# A closing tag has no attributes: quotes in it hide nothing.
+TAG_END_PATTERN: re.Pattern = re.compile(rb">")
 # Inside a DOCTYPE, brackets nest an internal subset, quotes hide
 # everything, and comments and instructions are markup of their own.
 DOCTYPE_STOP_PATTERN: re.Pattern = re.compile(rb"[<>\[\]\"']")
@@ -1343,6 +1345,7 @@ class Tokenizer:
     TAG_OPEN_AT: int = -1
     TAG_SCAN: int = 0
     TAG_QUOTE: bytes = b""
+    TAG_STOP: re.Pattern = TAG_STOP_PATTERN
     TIMED_OUT: bool = False
     # Separator tags the feed spelled wrong (unquoted or repeated
     # attributes, leftovers in a closing tag): said once, counted.
@@ -1351,6 +1354,8 @@ class Tokenizer:
     actual_item: ParsedItem = dataclasses.field(init=False)
     opening_tag_pattern: re.Pattern = dataclasses.field(init=False)
     closing_tag_pattern: re.Pattern = dataclasses.field(init=False)
+    opening_head: bytes = dataclasses.field(init=False)
+    closing_head: bytes = dataclasses.field(init=False)
     wrapper_open: bytes = dataclasses.field(init=False)
     wrapper_close: bytes = dataclasses.field(init=False)
 
@@ -1391,6 +1396,8 @@ class Tokenizer:
 
     def initialize_tag_patterns(self) -> None:
         opening_tag: bytes = self.separator_tag.encode()
+        self.opening_head = b"<" + opening_tag
+        self.closing_head = b"</" + opening_tag
         # Precomputed once: the per-item wrapper fed to expat.
         self.wrapper_open = b"<" + opening_tag + b">"
         self.wrapper_close = b"</" + opening_tag + b">"
@@ -1587,7 +1594,7 @@ class Tokenizer:
                 self.TAG_QUOTE = b""
                 pos = close + 1
                 continue
-            match = TAG_STOP_PATTERN.search(buffer, pos)
+            match = self.TAG_STOP.search(buffer, pos)
             if match is None:
                 self.TAG_SCAN = len(buffer)
                 return -1
@@ -1598,25 +1605,39 @@ class Tokenizer:
             self.TAG_QUOTE = char
             pos = match.start() + 1
 
-    def pending_tag_tail(self, floor: int) -> int:
+    def pending_tag_tail(self, floor: int, head: bytes) -> int:
         """ Absolute position where a suffix starts that may still grow
-        into a tag or a section opener; discarding it would lose data.
-        Returns len(BUFFER) when nothing needs keeping. """
+        into the sought tag (`head`) or a section opener; discarding it
+        would lose data. Returns len(BUFFER) when nothing needs keeping. """
         idx: int = self.BUFFER.rfind(b"<", floor)
         if idx == -1:
+            return len(self.BUFFER)
+        tail: bytes = bytes(self.BUFFER[idx:idx + len(head) + 1])
+        if len(tail) <= len(head):
+            # Too short to tell; a lone "<" may also open a section.
+            if head.startswith(tail):
+                self.TAG_OPEN_AT = -1
+                return idx
+            return len(self.BUFFER)
+        if not tail.startswith(head) or not tail[-1:].isspace():
+            # Not the sought tag: its quotes must not hide what follows.
             return len(self.BUFFER)
         if self.TAG_OPEN_AT != idx:
             # Start (or restart) the walk of this tag.
             self.TAG_OPEN_AT = idx
             self.TAG_SCAN = idx + 1
             self.TAG_QUOTE = b""
+            self.TAG_STOP = (
+                TAG_STOP_PATTERN if head == self.opening_head
+                else TAG_END_PATTERN
+            )
         if self.resume_tag_scan() != -1:
             # The last tag is complete and already failed to match.
             self.TAG_OPEN_AT = -1
             return len(self.BUFFER)
         return idx
 
-    def advance_to(self, pattern: re.Pattern) -> re.Match | None:
+    def advance_to(self, pattern: re.Pattern, head: bytes) -> re.Match | None:
         """
         Advance the scanner to the next match of `pattern` lying outside
         every special section, or return None when the buffer runs out
@@ -1695,7 +1716,7 @@ class Tokenizer:
             opener: int = self.next_section_opener(self.SCAN, endpos)
             if opener == -1:
                 if match is None:
-                    self.SCAN = self.pending_tag_tail(self.SCAN)
+                    self.SCAN = self.pending_tag_tail(self.SCAN, head)
                 return match
 
             section = self.classify_section(opener)
@@ -1730,7 +1751,9 @@ class Tokenizer:
 
     def step(self) -> None:
         if self.PARSING_STATE == ParsingState.SEEK_OPEN:
-            matching_pattern = self.advance_to(self.opening_tag_pattern)
+            matching_pattern = self.advance_to(
+                self.opening_tag_pattern, self.opening_head
+            )
 
             if matching_pattern is None:
                 if self.SECTION is not None and not self.SECTION_GIVEN_UP:
@@ -1756,7 +1779,9 @@ class Tokenizer:
                     self.PARSING_STATE = ParsingState.SEEK_CLOSE
 
         elif self.PARSING_STATE == ParsingState.SEEK_CLOSE:
-            matching_pattern = self.advance_to(self.closing_tag_pattern)
+            matching_pattern = self.advance_to(
+                self.closing_tag_pattern, self.closing_head
+            )
 
             if matching_pattern is None:
                 # POS stays put: everything from it is item content.

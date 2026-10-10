@@ -85,7 +85,8 @@ pinned by tests (`tests/`), including generative ones (Hypothesis).
 - **Partial tails are never discarded.** A `<ite` or `<!-` cut at a
   buffer boundary is kept (`pending_tag_tail`) until more bytes
   arrive; an unterminated comment or CDATA section requests more data
-  without consuming anything.
+  without consuming anything. Only the sought separator tag is walked
+  across refills: a stray `<` in text, quotes and all, holds nothing.
 - **Separator matches inside markup do not count** (`advance_to`).
   Comments, CDATA, processing instructions and DOCTYPE declarations are
   scanned over, so a `<item>` written inside one can neither open, nor
