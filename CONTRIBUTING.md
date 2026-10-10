@@ -35,7 +35,7 @@ Before submitting:
   compatibility unless the change is explicitly justified.
 - Run the test suite on both supported floors:
   `uv run pytest tests/ -q` and
-  `uv run --isolated -p 3.10 pytest tests/ -q`.
+  `uv run --isolated -p 3.11 pytest tests/ -q`.
 - Lint gate: `uvx ruff check --select F401,F811,F841 xmlstreamer/ tests/`.
 - If you touch `COOKBOOK.md`, its snippets are executed by
   `tests/test_cookbook.py`; if you touch `benchmarks/`, run

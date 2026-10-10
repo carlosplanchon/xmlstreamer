@@ -54,7 +54,7 @@ Install with uv or pip:
 uv add xmlstreamer        # or: pip install xmlstreamer
 ```
 
-Requires Python 3.10 or newer.
+Requires Python 3.11 or newer.
 
 ## Usage
 
