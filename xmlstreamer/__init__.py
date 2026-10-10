@@ -42,6 +42,7 @@ from typing import Generic
 from typing import TypeVar
 from typing import cast
 from typing import overload
+from typing import Self
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -1866,7 +1867,7 @@ class FeedRun(Generic[ItemT]):
         # Items whose invalid utf-8 had to be replaced (encoding missed).
         self._replaced_items: int = 0
 
-    def __iter__(self) -> "FeedRun[ItemT]":
+    def __iter__(self) -> Self:
         return self
 
     def check_terminate(self) -> bool:
@@ -1936,7 +1937,7 @@ class FeedRun(Generic[ItemT]):
                     exc_info=True,
                 )
 
-    def __enter__(self) -> "FeedRun[ItemT]":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
@@ -2271,7 +2272,7 @@ class StreamInterpreter(Generic[ItemT]):
         if failures:
             raise failures[0]
 
-    def __enter__(self) -> "StreamInterpreter[ItemT]":
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
