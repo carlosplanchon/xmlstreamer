@@ -27,16 +27,11 @@ from enum import Enum
 
 import codecs
 
-from typing import Callable
-from typing import Generator
+from collections.abc import Callable
+from collections.abc import Generator
+from collections.abc import Iterable
 from typing import NoReturn
-from typing import Iterable
-from typing import Optional
-from typing import Dict
 from typing import Any
-from typing import List
-from typing import Tuple
-from typing import Union
 from typing import IO
 from typing import Generic
 from typing import TypeVar
@@ -74,10 +69,10 @@ __all__ = [
 FeedGeneratorT = Generator[bytes, None, None]
 
 # An item filter takes the flat {path: text} item and keeps it on truthy.
-ItemFilterT = Optional[Callable[[Dict[str, Any]], Any]]
+ItemFilterT = Callable[[dict[str, Any]], Any] | None
 
 # A local source: a filesystem path, or a binary file-like object.
-SourceT = Union[str, os.PathLike, IO[bytes]]
+SourceT = str | os.PathLike | IO[bytes]
 
 # What a run yields, pinned at construction by output=: dicts by
 # default and under Nested(), bytes under Raw().
@@ -91,7 +86,7 @@ USER_AGENT: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWeb"\
 # bytes on a streamed download, not a total duration. None disables both.
 DEFAULT_TIMEOUT: tuple = (30, 300)
 
-TimeoutT = Optional[Union[float, tuple]]
+TimeoutT = float | tuple | None
 
 STREAM_CHUNK_SIZE: int = 64 * 1024
 
@@ -220,7 +215,7 @@ class ApiKeyAuth(_StringFields):
         _check_header_value("ApiKeyAuth", "value", self.value)
 
 
-AuthT = Optional[Union[BasicAuth, DigestAuth, BearerAuth, ApiKeyAuth]]
+AuthT = BasicAuth | DigestAuth | BearerAuth | ApiKeyAuth | None
 
 
 def _validate_timeout(timeout: Any) -> None:
@@ -251,7 +246,7 @@ class Transport:
     """
     user_agent: str = USER_AGENT
     auth: AuthT = None
-    proxy: Optional[Dict[str, str]] = None
+    proxy: dict[str, str] | None = None
     timeout: TimeoutT = DEFAULT_TIMEOUT
     download_mode: str = "temp"
 
@@ -294,7 +289,7 @@ class Transport:
             _validate_timeout(self.timeout)
 
 
-def _check_latin1(auth: Any, fields: Tuple[str, ...]) -> None:
+def _check_latin1(auth: Any, fields: tuple[str, ...]) -> None:
     """
     Credentials that travel literally in an Authorization header,
     which carries latin-1 and nothing else. The HTTP path only: the
@@ -310,7 +305,7 @@ def _check_latin1(auth: Any, fields: Tuple[str, ...]) -> None:
             ) from None
 
 
-def _build_http_auth(auth: AuthT) -> Optional[Any]:
+def _build_http_auth(auth: AuthT) -> Any | None:
     """Returns the auth object compatible with requests, or None."""
     if isinstance(auth, BasicAuth):
         # Basic encodes both as latin-1 and sends them on the wire.
@@ -378,7 +373,7 @@ def stream_gzip_decompress(stream: FeedGeneratorT) -> FeedGeneratorT:
 def download_file(
     url: str,
     transport: Transport,
-    deadline: Optional[float] = None,
+    deadline: float | None = None,
         ) -> BufferedRandom:
     """
     Download file to temporary file.
@@ -424,7 +419,7 @@ def _ftp_open(
 def _copy_within_deadline(
     source: Any,
     target: BufferedRandom,
-    deadline: Optional[float],
+    deadline: float | None,
 ) -> None:
     """
     Spool the download, stopping if the run's budget runs out: the
@@ -451,7 +446,7 @@ def _download_into(
     f: BufferedRandom,
     url: str,
     transport: Transport,
-    deadline: Optional[float] = None,
+    deadline: float | None = None,
         ) -> BufferedRandom:
     parsed_url = urlparse(url)
     if parsed_url.scheme == "ftp":
@@ -526,9 +521,9 @@ def sample_decodes_as_utf8(sample: bytes) -> bool:
 
 
 def resolve_stream_encoding(
-    detected_encoding: Optional[str],
+    detected_encoding: str | None,
     sample: bytes,
-        ) -> Optional[str]:
+        ) -> str | None:
     """
     Return the codec for decode_stream, or None for passthrough. A valid
     utf-8 sample always wins over chardet (which misdetects utf-8 as
@@ -553,7 +548,7 @@ def resolve_stream_encoding(
     return detected_encoding
 
 
-def resolve_sample_encoding(sample: bytes) -> Optional[str]:
+def resolve_sample_encoding(sample: bytes) -> str | None:
     """
     Decide the stream codec for a sample. Valid utf-8 resolves to
     passthrough without ever running chardet; only non-utf-8 or
@@ -621,7 +616,7 @@ def _owned_generator(
     return generator
 
 
-def _past_deadline(deadline: Optional[float], stage: str) -> bool:
+def _past_deadline(deadline: float | None, stage: str) -> bool:
     """The run's budget applies while acquiring the feed too."""
     if deadline is not None and time.monotonic() > deadline:
         logger.warning(
@@ -635,7 +630,7 @@ def _past_deadline(deadline: Optional[float], stage: str) -> bool:
 def _feed_generator_from_chunks(
     raw_chunks: Iterable[bytes],
     closer: Callable[[], Any],
-    deadline: Optional[float] = None,
+    deadline: float | None = None,
         ) -> FeedGeneratorT:
     """
     Feed generator over a one-way chunk iterator: gzip and encoding
@@ -670,7 +665,7 @@ def _feed_generator_from_chunks(
                     or _past_deadline(deadline, "sampling the encoding"):
                 break
         first_sample: bytes = b"".join(sampled)
-        stream_encoding: Optional[str] = resolve_sample_encoding(
+        stream_encoding: str | None = resolve_sample_encoding(
             first_sample
         )
         logger.debug(
@@ -697,7 +692,7 @@ def _feed_generator_from_chunks(
 def _stream_feed_generator(
     url: str,
     transport: Transport,
-    deadline: Optional[float] = None,
+    deadline: float | None = None,
         ) -> FeedGeneratorT:
     """
     Feed generator without a temp file: gzip and encoding detection peek
@@ -761,7 +756,7 @@ def _feed_generator_from_file(
     first_sample: bytes = read_stream_sample(
         generator=build_feed_generator()
     )
-    stream_encoding: Optional[str] = resolve_sample_encoding(first_sample)
+    stream_encoding: str | None = resolve_sample_encoding(first_sample)
     logger.debug(
         "Stream transcoding: %s", stream_encoding or "not needed (utf-8)"
     )
@@ -780,7 +775,7 @@ def _feed_generator_from_file(
 def get_feed_generator(
     url: str,
     transport: Transport,
-    deadline: Optional[float] = None,
+    deadline: float | None = None,
         ) -> FeedGeneratorT:
     if transport.download_mode == "stream":
         return _stream_feed_generator(
@@ -795,7 +790,7 @@ def get_feed_generator(
 
 def get_source_feed_generator(
     source: SourceT,
-    deadline: Optional[float] = None,
+    deadline: float | None = None,
         ) -> FeedGeneratorT:
     """
     Feed generator for a local source. A path is opened, read through
@@ -834,12 +829,12 @@ class ItemHandler:
     __slots__ = ("tags", "tags_appearances", "_stack")
 
     def __init__(self) -> None:
-        self.tags: Dict[str, str] = {}
-        self.tags_appearances: Dict[str, int] = {}
+        self.tags: dict[str, str] = {}
+        self.tags_appearances: dict[str, int] = {}
         # Stack frames: [key, direct_text, has_children]
         self._stack: list = []
 
-    def startElement(self, tag: str, attributes: Dict[str, str]) -> None:
+    def startElement(self, tag: str, attributes: dict[str, str]) -> None:
         if not self._stack:
             # The root wrapper's key stays outside the numbering namespace:
             # a field sharing its name keeps its bare key.
@@ -911,12 +906,12 @@ def sanitize_item_bytes(item_string: bytes) -> tuple:
         return item_string.decode("utf-8", "replace").encode(), True
 
 
-def parse_item(item_string: bytes) -> Optional[Dict[str, Any]]:
+def parse_item(item_string: bytes) -> dict[str, Any] | None:
     decoded_string, _ = sanitize_item_bytes(item_string)
     return parse_sanitized_item(decoded_string)
 
 
-def parse_sanitized_item(decoded_string: bytes) -> Optional[Dict[str, Any]]:
+def parse_sanitized_item(decoded_string: bytes) -> dict[str, Any] | None:
     handler = ItemHandler()
     parser = expat.ParserCreate()
     parser.buffer_text = True
@@ -953,7 +948,7 @@ class Nested:
     Output mode for StreamInterpreter: emit each item re-shaped with
     to_nested, forwarding force_list.
     """
-    force_list: Optional[Union[bool, Iterable[str]]] = None
+    force_list: bool | Iterable[str] | None = None
 
     def __post_init__(self) -> None:
         # Frozen here: a generator is spent on the first item and
@@ -988,9 +983,9 @@ class Raw:
 
 
 def to_nested(
-    item: Dict[str, Any],
-    force_list: Optional[Union[bool, Iterable[str]]] = None,
-        ) -> Dict[str, Any]:
+    item: dict[str, Any],
+    force_list: bool | Iterable[str] | None = None,
+        ) -> dict[str, Any]:
     """
     Re-shape a flat {path: text} item into nested dicts (split on "/").
     Numbered siblings stay numbered, mixed-content text goes under
@@ -1006,9 +1001,9 @@ def to_nested(
         if force_list and force_list is not True
         else set()
     )
-    nested: Dict[str, Any] = {}
-    seen_segments: Dict[tuple, set] = {}
-    list_elements: Dict[tuple, Dict[str, Any]] = {}
+    nested: dict[str, Any] = {}
+    seen_segments: dict[tuple, set] = {}
+    list_elements: dict[tuple, dict[str, Any]] = {}
 
     def base_of(segment: str, level: tuple) -> str:
         # Numbered only if the unnumbered base was seen as a sibling.
@@ -1064,7 +1059,7 @@ def to_nested(
 @dataclasses.dataclass(slots=True)
 class ParsedItem:
     content: bytes = b""
-    parsed_content: Optional[Dict[str, Any]] = None
+    parsed_content: dict[str, Any] | None = None
     # True when invalid utf-8 had to be replaced to parse this item.
     replaced: bool = False
 
@@ -1078,7 +1073,7 @@ class ParsedItem:
         decoded, self.replaced = sanitize_item_bytes(
             wrapper_open + self.content + wrapper_close
         )
-        self.parsed_content: Optional[Dict[str, Any]] = parse_sanitized_item(
+        self.parsed_content: dict[str, Any] | None = parse_sanitized_item(
             decoded
         )
 
@@ -1317,7 +1312,7 @@ class Tokenizer:
     sections: Sections = dataclasses.field(default_factory=Sections)
     # Monotonic instant after which scanning stops, so a slow source
     # cannot outlive the run's budget between two items.
-    deadline: Optional[float] = None
+    deadline: float | None = None
 
     BUFFER: bytearray = dataclasses.field(default_factory=bytearray)
     # Consumption cursor: the pending bytes are BUFFER[POS:].
@@ -1331,7 +1326,7 @@ class Tokenizer:
     PARSING_STATE: ParsingState = ParsingState.SEEK_OPEN
     # Terminator awaited while inside a section, with where it opened
     # and how long it may stay unterminated.
-    SECTION: Optional[bytes] = None
+    SECTION: bytes | None = None
     SECTION_OPEN_AT: int = -1
     SECTION_LIMIT: int = 0
     SECTION_IS_DOCTYPE: bool = False
@@ -1454,7 +1449,7 @@ class Tokenizer:
 
         return content_present
 
-    def classify_section(self, start: int) -> Optional[tuple]:
+    def classify_section(self, start: int) -> tuple | None:
         """
         Classify the opener at `start` as (terminator, header, limit).
         Returns None when it opens no section, and an empty tuple when
@@ -1621,7 +1616,7 @@ class Tokenizer:
             return len(self.BUFFER)
         return idx
 
-    def advance_to(self, pattern: re.Pattern) -> Optional[re.Match]:
+    def advance_to(self, pattern: re.Pattern) -> re.Match | None:
         """
         Advance the scanner to the next match of `pattern` lying outside
         every special section, or return None when the buffer runs out
@@ -1820,7 +1815,7 @@ class Tokenizer:
         elif self.PARSING_STATE == ParsingState.EOF:
             logger.debug("> EOF:")
 
-    def get_item(self) -> Optional[ParsedItem]:
+    def get_item(self) -> ParsedItem | None:
         self.step()
         while self.PARSING_STATE != ParsingState.ITEM_PARSED:
             self.step()
@@ -1844,7 +1839,7 @@ class FeedRun(Generic[ItemT]):
         interpreter: "StreamInterpreter[ItemT]",
         tokenizer: Tokenizer,
         budget_start: float,
-        budget: Optional[float],
+        budget: float | None,
     ) -> None:
         self.interpreter = interpreter
         self.tokenizer = tokenizer
@@ -1852,7 +1847,7 @@ class FeedRun(Generic[ItemT]):
         # Budget and clock are the run's own, taken when it opened. The
         # clock starts before acquisition: a slow download spends it.
         self._budget_start: float = budget_start
-        self._budget: Optional[float] = budget
+        self._budget: float | None = budget
         # What the run needed to open itself is fixed here; what it
         # applies per item (filter, output shape) is read when applied.
         self._stream_mode: bool = (
@@ -1872,7 +1867,7 @@ class FeedRun(Generic[ItemT]):
 
     def check_terminate(self) -> bool:
         """Whether this run has spent its share of the time budget."""
-        budget: Optional[float] = self._budget
+        budget: float | None = self._budget
         if budget is None:
             return False
         running_time: float = time.monotonic() - self._budget_start
@@ -1960,7 +1955,7 @@ class FeedRun(Generic[ItemT]):
             if self.check_terminate() is True:
                 self.finish()
 
-            item: Optional[ParsedItem] = self.tokenizer.get_item()
+            item: ParsedItem | None = self.tokenizer.get_item()
             if self._finished:
                 break  # closed from inside the scan
 
@@ -2009,43 +2004,43 @@ class StreamInterpreter(Generic[ItemT]):
     # output=. Signatures must mirror the implementation below.
     @overload
     def __init__(
-        self: "StreamInterpreter[Dict[str, Any]]",
-        url: Optional[str] = None,
-        separator_tag: Optional[str] = None,
+        self: "StreamInterpreter[dict[str, Any]]",
+        url: str | None = None,
+        separator_tag: str | None = None,
         item_filter: ItemFilterT = None,
         buffer_size: int = 1024 * 128,
-        max_running_time: Optional[float] = None,
-        output: Optional[Nested] = None,
-        transport: Optional[Transport] = None,
-        sections: Optional[Sections] = None,
-        source: Optional[SourceT] = None,
+        max_running_time: float | None = None,
+        output: Nested | None = None,
+        transport: Transport | None = None,
+        sections: Sections | None = None,
+        source: SourceT | None = None,
             ) -> None: ...
 
     @overload
     def __init__(
         self: "StreamInterpreter[bytes]",
-        url: Optional[str] = None,
-        separator_tag: Optional[str] = None,
+        url: str | None = None,
+        separator_tag: str | None = None,
         item_filter: ItemFilterT = None,
         buffer_size: int = 1024 * 128,
-        max_running_time: Optional[float] = None,
+        max_running_time: float | None = None,
         output: Raw = ...,
-        transport: Optional[Transport] = None,
-        sections: Optional[Sections] = None,
-        source: Optional[SourceT] = None,
+        transport: Transport | None = None,
+        sections: Sections | None = None,
+        source: SourceT | None = None,
             ) -> None: ...
 
     def __init__(
         self,
-        url: Optional[str] = None,
-        separator_tag: Optional[str] = None,
+        url: str | None = None,
+        separator_tag: str | None = None,
         item_filter: ItemFilterT = None,
         buffer_size: int = 1024 * 128,  # 128Kb
-        max_running_time: Optional[float] = None,
-        output: Optional[Union[Nested, Raw]] = None,
-        transport: Optional[Transport] = None,
-        sections: Optional[Sections] = None,
-        source: Optional[SourceT] = None,
+        max_running_time: float | None = None,
+        output: Nested | Raw | None = None,
+        transport: Transport | None = None,
+        sections: Sections | None = None,
+        source: SourceT | None = None,
             ) -> None:
         # Every argument is checked here, at the call site, so a bad
         # value can never fail mid-iteration or yield zero items.
@@ -2129,8 +2124,8 @@ class StreamInterpreter(Generic[ItemT]):
             )
 
         self.BUFFER_SIZE = buffer_size
-        self.URL: Optional[str] = url
-        self.SOURCE: Optional[SourceT] = source
+        self.URL: str | None = url
+        self.SOURCE: SourceT | None = source
         self.separator_tag = separator_tag
         self.MAX_RUNNING_TIME = max_running_time
         self.OUTPUT = output
@@ -2153,7 +2148,7 @@ class StreamInterpreter(Generic[ItemT]):
         self._source_consumed: bool = False
         # The last run opened by iterating this interpreter, if any.
         # Counters live on the run; the properties below answer for it.
-        self.last_run: Optional["FeedRun[ItemT]"] = None
+        self.last_run: FeedRun[ItemT] | None = None
 
     def __iter__(self) -> "FeedRun[ItemT]":
         """Open a run: its own source, tokenizer and counters."""
@@ -2165,7 +2160,7 @@ class StreamInterpreter(Generic[ItemT]):
             )
         self.start_date = datetime.now()
         budget_start: float = time.monotonic()
-        deadline: Optional[float] = (
+        deadline: float | None = (
             None if self.MAX_RUNNING_TIME is None
             else budget_start + self.MAX_RUNNING_TIME
         )
@@ -2230,8 +2225,8 @@ class StreamInterpreter(Generic[ItemT]):
             # A sweep already owns this teardown: a nested close() recurses
             # per run and hides another source's failure inside a hook.
             return
-        failures: List[BaseException] = []
-        cancellation: Optional[BaseException] = None
+        failures: list[BaseException] = []
+        cancellation: BaseException | None = None
         # Held for the whole sweep: only one snapshot is taken, so
         # the set must not grow behind it.
         self._closing = True

@@ -13,9 +13,6 @@ import sys
 
 from itertools import islice
 
-from typing import List
-from typing import Optional
-
 from . import (
     FeedInterruptedError,
     Nested,
@@ -83,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.raw and args.nested:
